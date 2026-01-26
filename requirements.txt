@@ -1,0 +1,6 @@
+numpy>=1.21.0
+networkx>=2.6.0
+click>=8.0.0
+pyyaml>=6.0
+pysnmp==4.4.12
+pyasn1==0.4.8

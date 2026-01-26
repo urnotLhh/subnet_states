@@ -1,0 +1,52 @@
+# 子网状态评估配置文件
+
+# 第一层：冗余容量评估阈值
+redundancy:
+  por_threshold: 0.5  # 端口占用率阈值，低于此值可直接通过
+
+# 第二层：综合评估参数
+comprehensive:
+  # 归一化参数
+  normalization:
+    max_power: 10  # 最大科学计数法幂次
+    most_freq_power: 5  # 最常见幂次
+  
+  # 动态权重计算
+  weight:
+    use_std_coefficient: true  # 是否使用标准差系数
+    min_weight: 0.1  # 最小权重
+    max_weight: 0.4  # 最大权重
+  
+  # 拓扑分析
+  topology:
+    use_betweenness: true  # 是否使用介数中心性
+    normalize_centrality: true  # 是否归一化中心性值
+
+# 速率等级划分
+rate_levels:
+  level_5:  # 极高速度
+    min_score: 90
+    description: "极高速度"
+  level_4:  # 高速
+    min_score: 75
+    description: "高速"
+  level_3:  # 中速
+    min_score: 60
+    description: "中速"
+  level_2:  # 低速
+    min_score: 40
+    description: "低速"
+  level_1:  # 极低速
+    min_score: 0
+    description: "极低速"
+
+# Scout 工具配置
+scout:
+  path: "scout"  # scout 工具路径，如果在 PATH 中则直接使用 "scout"
+  timeout: 30  # 命令执行超时时间（秒）
+  retry_count: 3  # 失败重试次数
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "[%(levelname)s] %(message)s"
