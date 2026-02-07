@@ -128,6 +128,61 @@ class ScoutTool:
         result = self.snmp.get(ip, ["1.3.6.1.2.1.1.1.0"])
         return result is not None
 
+    def _check_snmp_port_nmap(self, ip: str) -> bool:
+        """
+        使用 nmap 检测目标 IP 的 SNMP 端口 (UDP 161) 是否开放
+
+        Args:
+            ip: 目标 IP 地址
+
+        Returns:
+            True 如果端口状态为 open（排除 open|filtered），否则 False
+        """
+        try:
+            cmd = ['sudo', '-S', 'nmap', '-sU', '-p', '161', ip]
+            print(f"[NMAP] 正在执行: {' '.join(cmd)}")
+            logger.info(f"[NMAP] 开始扫描 {ip}:161 UDP 端口")
+
+            result = subprocess.run(
+                cmd,
+                input=SUDO_PASSWORD + '\n',
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            output = result.stdout
+            print(f"[NMAP] {ip} 扫描结果:\n{output}")
+            logger.info(f"[NMAP] {ip} 返回码: {result.returncode}")
+
+            # 检查输出中是否包含 open 状态（排除 open|filtered）
+            # nmap 输出格式: "161/udp open snmp" 或 "161/udp open|filtered snmp"
+            # 只接受明确的 "open" 状态
+            for line in output.split('\n'):
+                if '161/udp' in line:
+                    # 排除 open|filtered，只接受纯 open
+                    if 'open|filtered' in line:
+                        print(f"[NMAP] {ip}:161 端口状态: open|filtered (跳过)")
+                        logger.info(f"[NMAP] {ip}:161 端口 open|filtered，跳过")
+                        return False
+                    elif 'open' in line:
+                        print(f"[NMAP] {ip}:161 端口状态: open (确认开放)")
+                        logger.info(f"[NMAP] {ip}:161 端口确认开放")
+                        return True
+
+            print(f"[NMAP] {ip}:161 端口状态: 未开放/过滤")
+            logger.info(f"[NMAP] {ip}:161 端口未开放")
+            return False
+
+        except subprocess.TimeoutExpired:
+            print(f"[NMAP] {ip} 扫描超时!")
+            logger.warning(f"nmap 扫描 {ip} 超时")
+            return False
+        except Exception as e:
+            print(f"[NMAP] {ip} 扫描失败: {e}")
+            logger.warning(f"nmap 扫描 {ip} 失败: {e}")
+            return False
+
     def _run_dnmap(self, args: List[str], timeout: int = 300) -> tuple:
         """
         执行 dnmap 命令
@@ -169,10 +224,9 @@ class ScoutTool:
         """
         发现子网内 SNMP 设备
 
-        优化流程:
-        1. ICMP Ping 扫描发现存活主机
-        2. UDP 161 端口扫描筛选可能支持 SNMP 的主机
-        3. 只对 161 端口开放的主机进行 SNMP 验证
+        流程:
+        1. ICMP Ping 扫描发现存活主机 (dnmap)
+        2. 使用 PySNMP 直接验证 SNMP 服务可用性
 
         Args:
             subnet: CIDR 格式子网，如 "192.168.1.0/24"
@@ -186,39 +240,44 @@ class ScoutTool:
 
         # ========== 第一步: ICMP Ping 扫描发现存活主机 ==========
         logger.info(f"[1/2] ICMP Ping 扫描子网: {subnet}")
+        print(f"\n{'='*60}")
+        print(f"[1/2] ICMP Ping 扫描子网: {subnet}")
+        print(f"{'='*60}")
 
         success, result = self._run_dnmap(['-sP', '-t', subnet, '-oJ'])
         if not success:
             return {"error": f"ICMP 扫描失败: {result}"}
 
         alive_hosts = self._parse_dnmap_output(result)
+        print(f"[1/2] 发现 {len(alive_hosts)} 台存活主机")
         logger.info(f"发现 {len(alive_hosts)} 台存活主机")
 
         if not alive_hosts:
             return {"devices": []}
 
-        # ========== 第二步: UDP 161 端口扫描 ==========
-        logger.info(f"[2/2] UDP 161 端口扫描 ({len(alive_hosts)} 台主机)")
+        # ========== 第二步: 使用 PySNMP 直接验证 SNMP 服务 ==========
+        logger.info(f"[2/2] 验证 SNMP 服务 ({len(alive_hosts)} 台主机)")
+        print(f"\n{'='*60}")
+        print(f"[2/2] 开始 SNMP 服务验证，共 {len(alive_hosts)} 台主机")
+        print(f"      (每台超时最多 4 秒，预计最长 {len(alive_hosts) * 4 // 60} 分钟)")
+        print(f"{'='*60}")
 
-        # 将存活主机列表转为逗号分隔的字符串
-        hosts_str = ','.join(alive_hosts)
+        snmp_devices = []
+        for i, host in enumerate(alive_hosts, 1):
+            print(f"[{i}/{len(alive_hosts)}] 验证 {host} ... ", end="", flush=True)
+            if self._verify_snmp(host):
+                snmp_devices.append(host)
+                print("通过")
+                logger.debug(f"主机 {host} SNMP 验证通过")
+            else:
+                print("失败/超时")
 
-        success, result = self._run_dnmap(['-sU', '-p', '161', '-t', hosts_str, '-oJ'])
-        if not success:
-            # UDP 扫描失败时，回退到对所有存活主机进行 SNMP 验证
-            logger.warning(f"UDP 扫描失败: {result}，回退到逐个 SNMP 验证")
-            snmp_devices = []
-            for host in alive_hosts:
-                if self._verify_snmp(host):
-                    snmp_devices.append(host)
-            snmp_hosts = snmp_devices
-        else:
-            snmp_hosts = self._parse_dnmap_output(result)
+        print(f"\n{'='*60}")
+        print(f"[2/2] SNMP 验证完成: {len(snmp_devices)}/{len(alive_hosts)} 台主机验证通过")
+        print(f"{'='*60}\n")
+        logger.info(f"发现 {len(snmp_devices)} 台 SNMP 设备")
 
-        logger.info(f"发现 {len(snmp_hosts)} 台 SNMP 设备 (UDP 161 端口开放)")
-
-        # UDP 161 端口开放即认为支持 SNMP，无需再次验证
-        devices = [{"ip": host, "snmp_enabled": True, "status": "up"} for host in snmp_hosts]
+        devices = [{"ip": host, "snmp_enabled": True, "status": "up"} for host in snmp_devices]
         return {"devices": devices}
 
     def _parse_dnmap_output(self, output: str) -> List[str]:
